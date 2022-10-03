@@ -1,0 +1,806 @@
+---
+title: "Network Analysis"
+author: "Nehemiah Ongeso"
+date: "29/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## lOAD REQUIRED PACKAGES
+
+```{r}
+#install.packages(c('tidyverse','gplots','ggplot2','knitr','limma','reshape2','RColorBrewer'))
+
+#BiocManager:install(c('WGCNA','limma','OrganismDbi','dupRadar','Rsubread','edgeR','sva','reshape2','ggfortify','flashClust','igraph','RCy3'))
+
+library('gplots')
+library('ggplot2')
+#library('knitr')
+library('limma')
+library('reshape2')
+library('RColorBrewer')
+library('WGCNA')
+library('tidyverse')
+#library('RCy3')
+library('edgeR')
+#library('OrgabismDbi')
+#library('dupRadar')
+library('Rsubread')
+#library('sva')
+library('reshape2')
+library('ggfortify')
+library('flashClust')
+library('igraph')
+```
+
+```{r}
+# Make sure results are reproducible
+set.seed(1)
+
+options(stringsAsFactors=FALSE);
+# Allowing multi-threading within WGCNA speeds up certain calculations
+enableWGCNAThreads(nThreads=200) 
+# Read sample meta-data file
+samples <- read.csv('/data/nongeso/nongeso/nehe/data_r/metadata.csv', header=TRUE)
+
+#kable(samples)
+
+samples$condition<-factor(samples$condition)
+
+samples$condition
+
+# Read in count data
+raw_counts <- read.table('/data/nongeso/nongeso/nehe/data_r/NA.txt', row.names=1, header=TRUE)
+head(raw_counts)
+dim(raw_counts)
+
+names(raw_counts)
+raw_counts<-raw_counts[-c(1:5),]
+
+
+names(raw_counts)<- c("Egg_2","J3_3","J4_3","J4_2","Egg_1","J4_1",
+                      "Adult_2","Adult_1","Adult_3","J2_2","J3_1","J2_3","J3_2","J2_1","Egg_3")
+```
+
+```{r}
+# Data Preparation
+# Sample check
+# add a colorbar along the heatmap with sample condition
+
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+num_conditions <- nlevels(samples$condition)
+pal <- colorRampPalette(brewer.pal(num_conditions, "Set1"))(num_conditions)
+cond_colors <- pal[as.integer(samples$condition)]
+
+result<- "/data/nongeso/nongeso/nehe/GCN_Finale_Analysis/GCN_Plant_Parasite_Interaction/results"
+setwd(result)
+
+sizeGrWindow(9, 6)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+png("1.Raw_Correlations.png")
+heatmap.2(cor(raw_counts), RowSideColors=cond_colors,
+          trace='none', main='Raw Correlations')
+dev.off()
+```
+```{r}
+#Low count filtering
+# Remove all rows with less than n counts across all samples, where n=#samples
+
+# from the edger package
+keep.exprs <- filterByExpr(raw_counts, group=samples$condition)
+filtered_raw_counts <- raw_counts[keep.exprs,]
+dim(filtered_raw_counts)
+dim(raw_counts)
+
+#LOG2 TRANSFORMATION
+# Most of the methods developed for co-expression network analysis and network
+# inference were written for use with micro array data, 
+# including WGCNA!
+
+# Attempting to apply a method such as this to discrete-count 
+# RNA-Seq data will not work out well.
+
+# There are a number of methods for working around this, in effect, 
+# making RNA-Seq data "look" more like microarray data, 
+# but the simplest thing is just to log the data. 
+# This will transform our discrete, over-dispersed counts 
+# to a more Poisson-like continuous distribution.
+
+log_counts <- log2(filtered_raw_counts + 1)
+head(log_counts)
+
+log_counts <- log_counts[apply(log_counts, 1, var) > 0,]
+dim(log_counts)
+
+# Let's see how things look after logging the data.
+
+x = melt(as.matrix(log_counts))
+
+colnames(x) = c('gene_id', 'sample', 'value')
+ggplot(x, aes(x=value, color=sample)) + geom_density()
+
+heatmap.2(cor(log_counts), RowSideColors=cond_colors,
+          trace='none', main='Sample correlations (log2-transformed)')
+
+```
+```{r}
+# CO-EXPRESSION NETWORK CONSTRUCTION
+# First, build a similarity matrix
+
+# Construct similarity matrix
+# Now, we are ready to start constructing our co-expression network. The first step is to generate a correlation, 
+# or more generally, a similarity matrix.
+# Here, we will use a metric that I have created which combines some of the benefits from both Pearson correlation and Euclidean Distance
+#' Similarity measure which combines elements from Pearson correlation and
+#' Euclidean distance.
+
+cordist <- function(dat) {
+  cor_matrix  <- cor(t(dat))
+  
+  dist_matrix <- as.matrix(dist(dat, diag=TRUE, upper=TRUE))
+  dist_matrix <- log1p(dist_matrix)
+  dist_matrix <- 1 - (dist_matrix / max(dist_matrix))
+  
+  sign(cor_matrix) * ((abs(cor_matrix) + dist_matrix)/ 2)
+}
+
+sim_matrix <- cordist(log_counts)
+# Let's see what our similarity matrix looks like at this point. Because the heatmap.2 function (which includes a biclustering step) 
+# can be pretty slow, we will use a sub-sample of our data -- for visualization purposes this is fine.
+
+
+heatmap_indices <- sample(nrow(sim_matrix), 500)
+
+heatmap.2(t(sim_matrix[heatmap_indices, heatmap_indices]),
+          col=redgreen(75),
+          labRow=NA, labCol=NA, 
+          trace='none', dendrogram='row',
+          xlab='Gene', ylab='Gene',
+          main='Similarity matrix',
+          density.info='none', revC=TRUE)
+```
+```{r}
+# transpose the matrix before constructing an adjacency matrix
+log_counts_t <- t(log_counts)
+head(log_counts_t)
+#view(log_counts_t) 
+
+# Construct similarity matrix
+# determine the soft-thresholding power to use
+
+powers <- c(c(1:10), seq(from = 12, to=30, by=2))
+
+# Call the network topology analysis function
+sft <- pickSoftThreshold(log_counts_t, powerVector = powers, verbose = 5)
+# Plot the results:
+
+sizeGrWindow(9, 6)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+#png("4. soft-thresholding_power.png")
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+     main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.5,col="red")
+#dev.off()
+```
+
+```{r}
+# construct adjacency matrix
+softpower <- 16
+adjacency.matrix <- adjacency(log_counts_t, power=softpower,
+                              type = "signed", corFnc = "cor") ###changed corType
+
+```
+
+```{r}
+# Turn the adjacency matrix to topologicaal overlap matrix to minimize
+# the effects of noise and spurious associations
+TOM <- TOMsimilarity(adjacency.matrix, TOMType = "signed")
+dissTOM <- 1 - TOM
+
+
+#set diagonal to NA to remove uninformative correlations
+diag(adjacency.matrix) <- NA
+
+# Adjacency matrix heatmap plot / network heatmap of selected genes
+heatmap_indices <- sample(nrow(adjacency.matrix), 500) # sub-sample for visualization purposes
+
+png("6. adjacency_matrix_heatmap.png")
+heatmap.2(t(adjacency.matrix[heatmap_indices, heatmap_indices]),
+          col=redgreen(75),
+          labRow=NA, labCol=NA, 
+          trace='none', dendrogram='row',
+          xlab='Gene', ylab='Gene',
+          main='Adjacency matrix',
+          density.info='none', revC=TRUE)
+dev.off()
+```
+
+```{r}
+
+# remove adjacency matrix and TOM to free up memory
+rm(adjacency.matrix)
+gc()
+
+```
+
+```{r}
+################################################################
+## Detecting co-expression modules in R
+################################################################
+
+# view the dendrogram based on hierachical clustering of genes
+gene_tree <- flashClust(as.dist(dissTOM), method = "average")
+
+# plot the gene tree
+png("7. gene_tree.png")
+#sizeGrWindow(12,9) #open graphical window
+plot(gene_tree, xlab="", sub="", main = "Gene clustering based on TOM dissimilarity", 
+     labels = FALSE, hang = 0.04)
+dev.off()
+
+```
+
+
+```{r}
+# identify the modules
+module_labels <- cutreeDynamicTree(gene_tree, deepSplit = FALSE, 
+                                   minModuleSize = 30)
+
+#view
+table(module_labels)
+
+# convert labels to colours
+module_colours <- labels2colors(module_labels)
+
+# view
+table(module_colours)
+
+#### a list of 110 modules#
+
+```
+
+
+```{r}
+# visualize the gene tree and TOM matrix together using TOM plot
+# if necessary, raise dissTOM to a power to make moderately strong connection more visible in heatmap
+diag(dissTOM) <- NA
+
+png("8. gene_tree_and_dissTOM.png")
+TOMplot(dissTOM, gene_tree, as.character(module_colours))
+dev.off()
+# remove matrix to free memory
+rm(dissTOM)
+gc()
+```
+
+
+```{r}
+# plot gene dendrogram
+png(filename = "9. gene_tree_and_colours.png")
+#sizeGrWindow(8,6) #open graphical window
+plotDendroAndColors(gene_tree, module_colours, "Dynamic Tree Cut", dendroLabels = FALSE,
+                    hang = 0.03, addGuide = TRUE, guideHang = 0.05,
+                    main = "Gene dendrogram and module colours")
+dev.off()
+```
+
+```{r}
+# get hub genes
+# choose power 4: https://support.bioconductor.org/p/46342/
+module_hub_genes <- chooseTopHubInEachModule(log_counts_t, module_colours, 
+                                             power = 4,type = "signed")
+
+
+#saveRDS(module_hub_genes, file = here::here("data","intermediate","module_hub_genes.RDS"))
+length(module_hub_genes)
+module_hub_genes         ## add this
+##### A list of module hub genes#
+
+#The section below is included for further checks so it may not be necessary to carry out this analysis.
+
+# --------------------------------------------------------------------------------------------
+# merge modules with very similar expression profiles as their genes are highly co-expressed
+# get the module eigengenes
+module_eigengenes <- moduleEigengenes(log_counts_t, colors = module_colours)$eigengenes
+
+# calculate dissimilarity of module eigengenes using correlations
+module_eigengenes_diss <- 1 - cor(module_eigengenes)
+
+# cluster module eigengenes
+module_eigengenes_tree <- flashClust(as.dist(module_eigengenes_diss), method = "average")
+
+# choose height at which to cut the tree for merge i.e. the threshold
+module_eigengenes_thresh <- 0.25
+
+# create plots for the results
+png("10. module_eigengenes_cluster.png")
+#sizeGrWindow(7, 6)
+plot(module_eigengenes_tree, main = "Clustering of module eigengenes", xlab = "", sub = "")
+abline(h=module_eigengenes_thresh, col="red")
+
+dev.off()
+
+# merge the modules
+module_eigengenes_merge <- mergeCloseModules(log_counts_t, module_colours, 
+                                             cutHeight = module_eigengenes_thresh)
+
+# merged module colours
+merged_module_colours <- module_eigengenes_merge$colors
+length(merged_module_colours)
+# view
+table(merged_module_colours)
+
+### a list of 16 modules
+
+
+# eigengenes of new merged modules
+merged_module_eigengenes <- module_eigengenes_merge$newMEs
+
+
+# plot the dendrogram with original and merged colours underneath
+#sizeGrWindow(12, 9)
+png("11. merged-original_colours-original_dendro.png")
+plotDendroAndColors(gene_tree, cbind(module_colours, merged_module_colours), 
+                    c("Dynamic Tree Cut", "Merged dynamic"), 
+                    dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+dev.off()
+
+# plot heatmap of eigengenes (orginal before merge)
+png("12. eigengenes_heatmap.png")
+plotEigengeneNetworks(module_eigengenes, "Eigengenes heatmap", marHeatmap = c(3,4,2,2),
+                      plotDendrograms = FALSE, xLabelsAngle = 90)
+dev.off()
+
+
+
+#-----------------------------------------------------------------------------------------
+# rename some variables based on the module eigengene analysis for later use
+#
+# module colours
+#module.colours <- merged.module.colours
+
+# construct numerical labels corresponding to the colours
+colorOrder <- c("grey", standardColors(50))
+#module.labels <- match(module.colours, colorOrder)-1
+
+# module eigengenes
+#module.eigengenes <- merged.module.eigengenes
+
+# get hub genes
+merged_module_hub_genes <- chooseTopHubInEachModule(log_counts_t,
+                                                    merged_module_colours,
+                                                    power = 4,
+                                                    type = "signed")
+
+merged_module_hub_genes ###add this
+#### a list of merged module hub genes#
+
+##############################################################################
+## Network export to cytoscape
+##############################################################################
+
+# select modules of interest
+
+interesting_modules <- c('antiquewhite2', 'antiquewhite4', 'bisque4', 'black', 'blue','blue2', 'blue4', 
+                         'blueviolet', 'brown', 'brown2','brown4', 'coral', 'coral1', 'coral2', 'coral3', 
+                         'cyan', 'darkgreen', 'darkgrey', 'darkmagenta','darkolivegreen', 'darkolivegreen2', 
+                         'darkolivegreen4', 'darkorange', 'darkorange2', 'darkred', 'darkseagreen3', 'darkseagreen4', 
+                         'darkslateblue', 'darkturquoise', 'darkviolet', 'deeppink', 'firebrick3', 'firebrick4', 'floralwhite',
+                         'green', 'greenyellow', 'grey60', 'honeydew', 'honeydew1', 'indianred3', 'indianred4', 'ivory', 
+                         'lavenderblush2', 'lavenderblush3', 'lightblue4', 'lightcoral','lightcyan', 'lightcyan1', 'lightgreen', 
+                         'lightpink3', 'lightpink4', 'lightslateblue', 'lightsteelblue', 'lightsteelblue1', 'lightyellow', 'magenta',
+                         'magenta4', 'maroon', 'mediumorchid', 'mediumpurple1', 'mediumpurple2', 'mediumpurple3', 'mediumpurple4', 
+                         'midnightblue', 'navajowhite1', 'navajowhite2', 'orange', 'orangered1', 'orangered3', 'orangered4', 
+                         'paleturquoise', 'palevioletred2', 'palevioletred3', 'pink', 'pink4', 'plum', 'plum1', 'plum2', 
+                         'plum3', 'plum4', 'purple', 'red', 'royalblue', 'saddlebrown', 'salmon', 'salmon1', 'salmon2', 
+                         'salmon4', 'sienna3', 'sienna4', 'skyblue', 'skyblue1', 'skyblue2', 'skyblue3', 'skyblue4', 
+                         'steelblue', 'tan', 'tan4', 'thistle', 'thistle1', 'thistle2', 'thistle3', 'thistle4', 
+                         'turquoise', 'violet', 'white', 'yellow', 'yellow3', 'yellow4', 'yellowgreen') # all 110 module colours, thus the whole network
+
+
+
+
+interesting_modules_1 <- c('antiquewhite4', 'bisque4','blue4','blueviolet', 'coral', 'darkgreen','darkolivegreen',
+                           'darkolivegreen4', 'darkorange', 'darkorange2', 'darkseagreen4','firebrick4', 'floralwhite',
+                           'green', 'greenyellow', 'grey60', 'honeydew', 'indianred4', 'ivory', 'lavenderblush3', 'lightgreen', 
+                           'lightpink4', 'lightsteelblue', 'lightyellow', 'magenta4','mediumorchid', 'mediumpurple1', 'mediumpurple2', 
+                           'mediumpurple4', 'midnightblue', 'navajowhite2', 'orangered1', 'orangered4', 'paleturquoise', 
+                           'palevioletred2', 'palevioletred3', 'pink', 'pink4', 'plum4', 'purple', 'red', 'royalblue', 
+                           'salmon1', 'salmon2', 'salmon4', 'sienna3', 'skyblue', 'skyblue1', 
+                           'steelblue', 'tan4', 'thistle', 'thistle1', 'thistle2', 'thistle3', 'thistle4', 
+                           'turquoise', 'yellow') # all 61 module colours, thus the whole network
+
+
+interesting_modules_2<-c('salmon2', 'salmon4', 'sienna3', 'skyblue', 'skyblue1',
+                         'steelblue', 'tan4', 'thistle', 'thistle1', 'thistle2', 'thistle3', 'thistle4',
+                         'turquoise', 'yellow')
+
+
+# obtain gene ids
+gene_ids <- rownames(log_counts)
+
+# select module genes
+#inModules <- is.finite(match(module.colours, interesting.modules)) # whole network modules
+
+#inModules <- is.finite(match(module.colours, enriched.modules)) # enriched modules
+#inModules <- is.finite(match(module_colours, c("midnightblue", "lightcyan"))) # individual modules
+inModules <- is.finite(match(module_colours, interesting_modules )) # whole network modules
+inModules61 <- is.finite(match(module_colours, interesting_modules_1 )) # 61 network modules
+inModule_few<- is.finite(match(module_colours, interesting_modules_2 )) # 61 network modules
+modGenes <- gene_ids[inModules]
+modGenes61 <- gene_ids[inModules61]
+modGenes_few <- gene_ids[inModules_few]
+
+
+
+# select the corresponding dissTOM based on module genes
+modTOM <- TOM[inModules, inModules]
+modTOM61 <- TOM[inModules61, inModules61]
+modTOM_few <- TOM[inModules_few, inModules_few]
+
+dimnames(modTOM) <- list(modGenes, modGenes)
+dimnames(modTOM61) <- list(modGenes61, modGenes61)
+dimnames(modTOM_few) <- list(modGenes61, modGenes_few)
+
+
+# Export the network into edge and node list files Cytoscape can read
+
+
+exportNetworkToCytoscape(modTOM,
+                         edgeFile = "CytoscapeInput-edges_wh_module_thresh03.txt",
+                         nodeFile = "CytoscapeInput-nodes_wh_module_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGenes,
+                         nodeAttr = module_colours[inModules]);
+
+
+
+
+exportNetworkToCytoscape(modTOM61,
+                         edgeFile = "CytoscapeInput-edges_61_module_thresh3.txt",
+                         nodeFile = "CytoscapeInput-nodes_61_module_thresh3.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGenes61,
+                         nodeAttr = module_colours[inModules61]);
+
+exportNetworkToCytoscape(modTOM61,
+                         edgeFile = "CytoscapeInput-edges_61_module_thresh1.txt",
+                         nodeFile = "CytoscapeInput-nodes_61_module_thresh1.txt",
+                         weighted = TRUE,
+                         threshold = 0.1,
+                         nodeNames = modGenes61,
+                         nodeAttr = module_colours[inModules61]);
+
+exportNetworkToCytoscape(modTOM_few,
+                         edgeFile = "CytoscapeInput-edges_few_module_thresh3.txt",
+                         nodeFile = "CytoscapeInput-nodes_few_module_thresh3.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGenes_few,
+                         nodeAttr = module_colours[inModules_few]);
+
+# Also, export the network as graphml format
+# use export_network_to_graphml function
+
+source("/data/nongeso/nehe/data_r/network_export_graphml.R")#####
+
+# the whole network
+entire_network <- export_network_to_graphml(TOM, 
+                                            filename = "entire_network_thresh0.graphml",
+                                            threshold = 0, #### why not 0.4
+                                            nodeAttr = gene_ids,
+                                            max_edge_ratio = 3)
+
+
+# the whole network
+entire_network <- export_network_to_graphml(TOM, 
+                                            filename = "entire_network_thresh02.graphml",
+                                            threshold = 0.3, #### why not 0.4
+                                            nodeAttr = gene_ids,
+                                            max_edge_ratio = 3)
+
+
+# network modules
+# create a dataframe with node attributes
+interesting_modules_colours <- module_colours[inModules] #get enriched module colours from module.colours
+interesting_modules_colours61 <- module_colours[inModules61] #get enriched module colours from module.colours
+interesting_modules_colours_few <- module_colours[inModules_few] #get enriched module colours from module.colours
+
+node_attributes <- cbind(modGenes, module=interesting_modules_colours) # node atrr. for enriched modules
+node_attributes61 <- cbind(modGenes61, module=interesting_modules_colours61) # node atrr. for enriched modules
+node_attributes_few <- cbind(modGenes_few, module=interesting_modules_colours_few) # node atrr.
+
+#node.attributes <- cbind(modGenes, module=module.colours) # get node attr. for whole network
+node_attributes <- as.data.frame(node_attributes)
+node_attributes61 <- as.data.frame(node_attributes61)
+node_attributes_few <- as.data.frame(node_attributes_few)
+
+
+# Add RGB versions of colour modules
+node_attributes$colourRGB <- col2hex(node_attributes$module)
+node_attributes61$colourRGB <- col2hex(node_attributes61$module)
+node_attributes_few$colourRGB <- col2hex(node_attributes_few$module)
+
+modules_network <- export_network_to_graphml(modTOM, 
+                                             filename = "modules_network_thresh0.02.graphml",
+                                             threshold = 0.02, ###threshold change ######
+                                             nodeAttrDataFrame = node_attributes)
+
+
+
+modules_network61 <- export_network_to_graphml(modTOM61, 
+                                               filename = "modules_network61_thresh0.02.graphml",
+                                               threshold = 0.02, ###threshold change ######
+                                               nodeAttrDataFrame = node_attributes61)
+
+# write out a node attributes files with hexadecimal colour names for module genes
+write.table(node_attributes, 
+            file = "Cytoscape_node_attributes_wh_modules_.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t")
+
+
+#sd
+
+## Functional Analysis
+
+### Loading annotations from the packages
+
+
+all_merged_modules
+mod1
+mod2
+mod3
+mod4
+mod5
+mod6
+mod7
+mod8
+mod9
+mod10
+
+inModule_merged <- is.finite(match(merged_module_colours, all_merged_modules)) # merged module network
+inModule1 <- is.finite(match(merged_module_colours, mod1 )) # modules
+inModule2 <- is.finite(match(merged_module_colours, mod2)) # 61 network modules
+inModule3 <- is.finite(match(merged_module_colours, mod3 )) # modules
+inModule4 <- is.finite(match(merged_module_colours, mod4)) # 61 network modules
+inModule5 <- is.finite(match(merged_module_colours, mod5 )) # modules
+inModule6 <- is.finite(match(merged_module_colours, mod6)) # 61 network modules
+inModule7 <- is.finite(match(merged_module_colours, mod7 )) # modules
+inModule8 <- is.finite(match(merged_module_colours, mod8)) # 61 network modules
+inModule9 <- is.finite(match(merged_module_colours, mod9 )) # modules
+inModule10 <- is.finite(match(merged_module_colours, mod10)) # 61 network modules
+
+modGene_merged <- gene_ids[inModule_merged]
+modGene1 <- gene_ids[inModule1]
+modGene2 <- gene_ids[inModule2]
+modGene3 <- gene_ids[inModule3]
+modGene4 <- gene_ids[inModule4]
+modGene5 <- gene_ids[inModule5]
+modGene6 <- gene_ids[inModule6]
+modGene7 <- gene_ids[inModule7]
+modGene8 <- gene_ids[inModule8]
+modGene9 <- gene_ids[inModule9]
+modGene10 <- gene_ids[inModule10]
+
+# select the corresponding dissTOM based on module genes
+modTOM_merged <- TOM[inModule_merged, inModule_merged]
+modTOM1<- TOM[inModule1, inModule1]
+modTOM2<- TOM[inModule2, inModule2]
+modTOM3<- TOM[inModule3, inModule3]
+modTOM4<- TOM[inModule4, inModule4]
+modTOM5<- TOM[inModule5, inModule5]
+modTOM6<- TOM[inModule6, inModule6]
+modTOM7<- TOM[inModule7, inModule7]
+modTOM8<- TOM[inModule8, inModule8]
+modTOM9<- TOM[inModule9, inModule9]
+modTOM10<- TOM[inModule10, inModule10]
+
+dimnames(modTOM_merged) <- list(modGene_merged ,modGene_merged )
+dimnames(modTOM1) <- list(modGene1, modGene1)
+dimnames(modTOM2) <- list(modGene2, modGene2)
+dimnames(modTOM3) <- list(modGene3, modGene3)
+dimnames(modTOM4) <- list(modGene4, modGene4)
+dimnames(modTOM5) <- list(modGene5, modGene5)
+dimnames(modTOM6) <- list(modGene6, modGene6)
+dimnames(modTOM7) <- list(modGene7, modGene7)
+dimnames(modTOM8) <- list(modGene8, modGene8)
+dimnames(modTOM9) <- list(modGene9, modGene9)
+dimnames(modTOM10) <- list(modGene10, modGene10)
+
+exportNetworkToCytoscape(modTOM_merged,
+                         edgeFile = "Merged_Modules_Edges_thresh03.txt",
+                         nodeFile = "Merged_Modules_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene_merged,
+                         nodeAttr = merged_module_colours[inModule_merged]);
+
+
+exportNetworkToCytoscape(modTOM1,
+                         edgeFile = "Modules1_Edges_thresh03.txt",
+                         nodeFile = "Modules1_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene1,
+                         nodeAttr = merged_module_colours[inModule1]);
+
+exportNetworkToCytoscape(modTOM2,
+                         edgeFile = "Modules2_Edges_thresh03.txt",
+                         nodeFile = "Modules2_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene2,
+                         nodeAttr = merged_module_colours[inModule2]);
+
+exportNetworkToCytoscape(modTOM3,
+                         edgeFile = "Modules3_Edges_thresh03.txt",
+                         nodeFile = "Modules3_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene3,
+                         nodeAttr = merged_module_colours[inModule3]);
+
+exportNetworkToCytoscape(modTOM4,
+                         edgeFile = "Modules4_Edges_thresh03.txt",
+                         nodeFile = "Modules4_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene4,
+                         nodeAttr = merged_module_colours[inModule4]);
+
+exportNetworkToCytoscape(modTOM5,
+                         edgeFile = "Modules5_Edges_thresh03.txt",
+                         nodeFile = "Modules5_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene5,
+                         nodeAttr = merged_module_colours[inModule5]);
+
+exportNetworkToCytoscape(modTOM6,
+                         edgeFile = "Modules6_Edges_thresh03.txt",
+                         nodeFile = "Modules6_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene6,
+                         nodeAttr = merged_module_colours[inModule6]);
+
+exportNetworkToCytoscape(modTOM7,
+                         edgeFile = "Modules7_Edges_thresh03.txt",
+                         nodeFile = "Modules7_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene7,
+                         nodeAttr = merged_module_colours[inModule7]);
+
+exportNetworkToCytoscape(modTOM8,
+                         edgeFile = "Modules8_Edges_thresh03.txt",
+                         nodeFile = "Modules8_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene8,
+                         nodeAttr = merged_module_colours[inModule8]);
+
+exportNetworkToCytoscape(modTOM9,
+                         edgeFile = "Modules9_Edges_thresh03.txt",
+                         nodeFile = "Modules9_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene9,
+                         nodeAttr = merged_module_colours[inModule9]);
+
+exportNetworkToCytoscape(modTOM10,
+                         edgeFile = "Modules10_Edges_thresh03.txt",
+                         nodeFile = "Modules10_Nodes_thresh03.txt",
+                         weighted = TRUE,
+                         threshold = 0.3,
+                         nodeNames = modGene10,
+                         nodeAttr = merged_module_colours[inModule10]);
+
+
+# network modules
+# create a dataframe with node attributes
+i_modules_colours_merged <- merged_module_colours[inModule_merged]
+i_modules_colours1 <- merged_module_colours[inModule1] 
+i_modules_colours2 <- merged_module_colours[inModule2] 
+i_modules_colours3 <- merged_module_colours[inModule3] 
+i_modules_colours4 <- merged_module_colours[inModule4] 
+i_modules_colours5 <- merged_module_colours[inModule5] 
+i_modules_colours6 <- merged_module_colours[inModule6] 
+i_modules_colours7 <- merged_module_colours[inModule7] 
+i_modules_colours8 <- merged_module_colours[inModule8] 
+i_modules_colours9 <- merged_module_colours[inModule9] 
+i_modules_colours10 <- merged_module_colours[inModule10] 
+
+node_attributes_merged <- cbind(modGene_merged, module=i_modules_colours_merged) # node attr.
+node_attributes1 <- cbind(modGene1, module=i_modules_colours_merged) # node attr.
+node_attributes2 <- cbind(modGene2, module=i_modules_colours_merged) # node attr.
+
+
+#node.attributes <- cbind(modGenes, module=module.colours) # get node attr. for whole network
+node_attributes_merged <- as.data.frame(node_attributes_merged)
+node_attributes1 <- as.data.frame(node_attributes1)
+node_attributes2 <- as.data.frame(node_attributes2)
+node_attributes3 <- as.data.frame(node_attributes3)
+node_attributes4 <- as.data.frame(node_attributes4)
+node_attributes5 <- as.data.frame(node_attributes5)
+node_attributes6 <- as.data.frame(node_attributes6)
+node_attributes7 <- as.data.frame(node_attributes7)
+node_attributes8 <- as.data.frame(node_attributes8)
+node_attributes9 <- as.data.frame(node_attributes9)
+node_attributes10 <- as.data.frame(node_attributes10)
+
+
+# Add RGB versions of colour modules
+node_attributes_merged$colourRGB <- col2hex(node_attributes_merged$module)
+node_attributes1$colourRGB <- col2hex(node_attributes1$module)
+node_attributes2$colourRGB <- col2hex(node_attributes2$module)
+node_attributes3$colourRGB <- col2hex(node_attributes3$module)
+node_attributes4$colourRGB <- col2hex(node_attributes4$module)
+node_attributes5$colourRGB <- col2hex(node_attributes5$module)
+node_attributes6$colourRGB <- col2hex(node_attributes6$module)
+node_attributes7$colourRGB <- col2hex(node_attributes7$module)
+node_attributes8$colourRGB <- col2hex(node_attributes8$module)
+node_attributes9$colourRGB <- col2hex(node_attributes9$module)
+node_attributes10$colourRGB <- col2hex(node_attributes10$module)
+
+# write out a node attributes files with hexadecimal colour names for module genes
+write.table(node_attributes_merged, 
+            file = "Merged_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+# write out a node attributes files with hexadecimal colour names for module genes
+write.table(node_attributes1, 
+            file = "Module1_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes2, 
+            file = "Module2_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes3, 
+            file = "Module3_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes4, 
+            file = "Module4_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes5, 
+            file = "Module5_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes6, 
+            file = "Module6_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes7, 
+            file = "Module7_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes8, 
+            file = "Module8_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes9, 
+            file = "Module9_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
+write.table(node_attributes10, 
+            file = "Module10_Node_Attributes_modules.txt",
+            row.names = FALSE, 
+            quote = FALSE, sep = "\t");
