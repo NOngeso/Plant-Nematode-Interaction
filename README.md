@@ -1,5 +1,5 @@
 # Plant Nematode Interaction
-** This work is the documentation of RNA-seq data analysis to establish a gene-gene co-expression network of the Root-Knot nematode. The work is licensed under [The MIT License](https://opensource.org/licenses/MIT). This means that you are able to copy, share and modify the work, as long as the result is distributed under the same license.**
+**This work is the documentation of RNA-seq data analysis to establish a gene-gene co-expression network of the Root-Knot nematode. The work is licensed under [The MIT License](https://opensource.org/licenses/MIT). This means that you are able to copy, share and modify the work, as long as the result is distributed under the same license.**
 
 ## Overview
 This pipeline consists of the processing of transcriptomic data. 
