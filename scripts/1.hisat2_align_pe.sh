@@ -9,7 +9,7 @@ genome=~/nehe/data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic.f
 
 #Build the reference genome  needed for Hisat2 aligner:
 
-hisat2-build $genome ~/nehe/data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic
+hisat2-build $genome
 
 #Path ro indexed reference genome
 igenome=~/nehe/data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic
