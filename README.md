@@ -65,10 +65,6 @@ We will start aligning of reads using one of the samples in our dataset (```SRR5
 An example of what a ```hisat2``` command looks like is below. All index files have this as their base name ```GCA_900182535.1_Meloidogyne_incognita_V3_genomic```.
 The data had pair end reads, where the forward reads are held in  ```SRR5684404_1.fastq.gz``` and the reverse reads in ```SRR5684404_1.fastq.gz```.
 
-```  
-hisat2-build /data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic.fna
-```
-
 ```
 hisat2 -x /data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic \
  -1 /data/SRR5684404_1.fastq.gz -2 /data/SRR5684404_2.fastq.gz \
@@ -78,11 +74,15 @@ hisat2 -x /data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic \
 You will see output that starts like this:
 ![screenshot]()
 
-You can have the preview of the [alignment script](https://github.com/NOngeso/Plant-Nematode-Interaction/blob/main/scripts/1.hisat2_align_pe.sh)
+You can have the preview of the [alignment script](https://github.com/NOngeso/Plant-Nematode-Interaction/blob/main/scripts/1.hisat2_align_pe.sh) used to run all the samples.
 
 ## 4. - Counting the coding sequences/genes present in the expression dataset
 
-use cut -f1,6 to show results of individual count matrix
-[]()
-[]()
+
+The count of sample ```SRR5684404``` has the first 20 ENSEMBL_GeneIDs. count matrix
+[SRR5684404 Count](https://github.com/NOngeso/Plant-Nematode-Interaction/blob/main/images/SRR5684404_Count_Matrix.PNG)
+
+[All Count Matrix]()
 show merged dataset 
+
+You can have the preview of the [count script](https://github.com/NOngeso/Plant-Nematode-Interaction/blob/main/scripts/1.hisat2_align_pe.sh) used to generate gene counts for all samples.
