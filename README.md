@@ -38,6 +38,7 @@ In this illustration we will download one dateset, `SRR5684404`, the ftp links o
 ```
 wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR568/004/SRR5684404/SRR5684404_1.fastq.gz
 wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR568/004/SRR5684404/SRR5684404_2.fastq.gz
+
 ```
 
 - **Metadata File:**
@@ -51,15 +52,18 @@ The alignment process consists of two steps:
 - **Indexing the reference genome** \
 Indexing of the reference genome was done to speed up the alignment process by enabling HISAT2 to discover potential alignment locations for query sequences.
 ```  
-hisat2-build /data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic.fna
+hisat2-build /ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic.fna GCA_014132215.1_MINJ2_genomic
 ``` 
+You will see output that starts like this:
+![screenshot](https://github.com/NOngeso/Plant-Nematode-Interaction/blob/main/images/Ref_genome_Indexing.PNG)
+
 - **Aligning the reads to the reference genome** \
 We will start aligning of reads using one of the samples in our dataset (`SRR5684404`). Later, we will be iterating this whole process on all sample files. \
 An example of what a `hisat2` command looks like is below. All index files have this as their base name `GCA_900182535.1_Meloidogyne_incognita_V3_genomic`.
 The data had pair end reads, where the forward reads are held in  `SRR5684404_1.fastq.gz` and the reverse reads in `SRR5684404_1.fastq.gz`.
 
 ```
-hisat2 -x /data/ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic \
+hisat2 -x /ref_genome/GCA_900182535.1_Meloidogyne_incognita_V3_genomic \
  -1 /data/SRR5684404_1.fastq.gz -2 /data/SRR5684404_2.fastq.gz \
  -S /results/SRR5684404.sam
 ``` 
