@@ -28,6 +28,8 @@ mkdir results
  wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/014/132/215/GCA_014132215.1_MINJ2/GCA_014132215.1_MINJ2_genomic.fna.gz
  # Acquiring annotation file
  wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/014/132/215/GCA_014132215.1_MINJ2/GCA_014132215.1_MINJ2_genomic.gbff.gz
+ 
+ gunzip *.gz # unzips all the present files.
  ```
 - **RNA-seq data:** \
 We acquired openly stored transcriptomic datasets from the [SRA](https://www.ncbi.nlm.nih.gov/sra/?term=meloidogyne+incognita%5Borgn%5D+SRP109232) database stored under Accession `SRP109232`. \
