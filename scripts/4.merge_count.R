@@ -1,5 +1,5 @@
 ## R script for combine HTSeq outputs into one read count matrix in R
-## Written by Ahmed Alhendi
+## Combined and adopted some segments of code from Ahmed Alhendi
 ## Usage example:  Rscript htseq-combine_all.R <workdir> <Reacount_matrix_output_name>
 
 args <- commandArgs(TRUE)
